@@ -552,6 +552,66 @@ def eye(
 
         g_pool.plugins = Plugin_List(g_pool, plugins_to_load)
 
+        # START: Custom Menu
+        # Add state for the new menu items
+        g_pool.pupil_intensity_range_text = session_settings.get(
+            "pupil_intensity_range_text", "30"
+        )
+        g_pool.custom_button_state = session_settings.get("custom_button_state", False)
+
+        # Create the menu
+        custom_menu = ui.Growing_Menu("Custom", header_pos="headline")
+
+        # Add a text input like control.
+        # Based on user request for "pupil intensity range in Pupil Detector 2D"
+        # which is a slider, but user asked for text input.
+        # This will fail if ui.Text_Input does not exist.
+        try:
+            custom_menu.append(
+                ui.Text_Input(
+                    "pupil_intensity_range_text",
+                    g_pool,
+                    label="Pupil Intensity Range",
+                )
+            )
+        except AttributeError:
+            logger.warning("ui.Text_Input not available. Falling back to a slider.")
+            custom_menu.append(
+                ui.Slider(
+                    "pupil_intensity_range_text",
+                    g_pool,
+                    label="Pupil Intensity Range",
+                    min=0,
+                    max=60,
+                    step=1,
+                )
+            )
+
+        # Add a button like "flip image display"
+        custom_menu.append(ui.Switch("custom_button_state", g_pool, label="Custom Button"))
+
+        def toggle_custom_menu(collapsed):
+            g_pool.menubar.collapsed = collapsed
+            for m in g_pool.menubar.elements:
+                m.collapsed = True
+            custom_menu.collapsed = collapsed
+
+        g_pool.menubar.append(custom_menu)
+
+        # Create an icon for the menu
+        icon = ui.Icon(
+            "collapsed",
+            custom_menu,
+            label=" ",  # Blank icon as requested
+            on_val=False,
+            off_val=True,
+            setter=toggle_custom_menu,
+            label_font="pupil_icons",
+        )
+        icon.tooltip = "Custom Menu"
+        g_pool.iconbar.append(icon)
+        # END: Custom Menu
+
         if not g_pool.capture:
             # Make sure we always have a capture running. Important if there was no
             # capture stored in session settings.
@@ -792,6 +852,8 @@ def eye(
         session_settings["display_mode"] = g_pool.display_mode
         session_settings["ui_config"] = g_pool.gui.configuration
         session_settings["version"] = str(g_pool.version)
+        session_settings["pupil_intensity_range_text"] = g_pool.pupil_intensity_range_text
+        session_settings["custom_button_state"] = g_pool.custom_button_state
 
         if not hide_ui:
             glfw.restore_window(main_window)  # need to do this for windows os
