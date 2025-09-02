@@ -137,6 +137,7 @@ def eye(
         import psutil
         from av_writer import JPEG_Writer, MPEG_Writer, NonMonotonicTimestampError
         from background_helper import IPC_Logging_Task_Proxy
+        from eyelid_plugin import Eyelid_Plugin
         from file_methods import Persistent_Dict
         from gl_utils import (
             adjust_gl_view,
@@ -237,7 +238,7 @@ def eye(
             + source_classes
             + available_detectors
             + runtime_detectors
-            + [Roi]
+            + [Roi, Eyelid_Plugin]
         )
         g_pool.plugin_by_name = {p.__name__: p for p in plugins}
 
@@ -265,6 +266,7 @@ def eye(
             ("HMD_Streaming_Manager", {}),
             ("File_Manager", {}),
             ("Roi", {}),
+            ("Eyelid_Plugin", {}),
         ]
 
         def consume_events_and_render_buffer():
