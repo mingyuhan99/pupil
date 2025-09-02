@@ -53,7 +53,7 @@ def pupil_version_string() -> str:
     # NOTE: This returns the current version as read from the last git tag. Normally you
     # don't want to use this, but get_version() below, which also works in a bundled
     # version (without git).
-    version = get_tag_commit()
+    version = "0.0.1-dev"
     if version is None:
         raise ValueError("Version Error")
 
