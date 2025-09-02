@@ -1,16 +1,14 @@
 import os
+
 import cv2
-import torch
 import numpy as np
-from pyglui import ui, font
-from pyglui.cygl.utils import Named_Texture
-from plugin import Plugin
+import torch
 from gl_utils import draw_gl_points_norm
-from .eyelid_detector import (
-    AdaptiveEyeNet6Layers,
-    calculate_ear,
-    apply_camera_rotation,
-)
+from plugin import Plugin
+from pyglui import font, ui
+from pyglui.cygl.utils import Named_Texture
+
+from .eyelid_detector import AdaptiveEyeNet6Layers, apply_camera_rotation, calculate_ear
 
 
 class Eyelid_Plugin(Plugin):
@@ -99,11 +97,12 @@ class Eyelid_Plugin(Plugin):
         )
         self.menu.add(ui.Button("Reload Models", self.load_model))
 
-        self.font = font.Font(self.g_pool.gui.theme.font_path, self.g_pool.gui.theme.font_size)
+        self.font = font.Font(
+            self.g_pool.gui.theme.font_path, self.g_pool.gui.theme.font_size
+        )
         self.text_texture = Named_Texture()
         self.frame_texture = Named_Texture()
         self.load_model()
-
 
     def toggle_menu(self, collapsed):
         self.g_pool.menubar.collapsed = collapsed
@@ -118,7 +117,7 @@ class Eyelid_Plugin(Plugin):
 
     def set_camera_position(self, position):
         self.camera_position = position
-        self.load_model() # Reload model when position changes
+        self.load_model()  # Reload model when position changes
 
     def load_model(self):
         try:
@@ -133,9 +132,7 @@ class Eyelid_Plugin(Plugin):
                 return
 
             self.model = AdaptiveEyeNet6Layers()
-            self.model.load_state_dict(
-                torch.load(path, map_location=self.device)
-            )
+            self.model.load_state_dict(torch.load(path, map_location=self.device))
             self.model.to(self.device)
             self.model.eval()
             self.log_info(f"Successfully loaded model from {path}")
@@ -155,7 +152,11 @@ class Eyelid_Plugin(Plugin):
                 # 2. Preprocess the frame for the model
                 img = cv2.resize(self.rotated_frame, (192, 192))
                 img_tensor = (
-                    torch.from_numpy(img).float().to(self.device).unsqueeze(0).unsqueeze(0)
+                    torch.from_numpy(img)
+                    .float()
+                    .to(self.device)
+                    .unsqueeze(0)
+                    .unsqueeze(0)
                 )
 
                 # 3. Run the model
@@ -174,7 +175,6 @@ class Eyelid_Plugin(Plugin):
                 self.rotated_frame = None
                 self.landmarks = None
 
-
     def gl_display(self):
         if self.model_enabled and self.model and self.rotated_frame is not None:
             # Create a texture from the rotated frame
@@ -189,7 +189,7 @@ class Eyelid_Plugin(Plugin):
 
             points = [tuple(p) for p in norm_landmarks]
 
-            draw_gl_points_norm(points, size=5, color=(0.,1.,0.,1.))
+            draw_gl_points_norm(points, size=5, color=(0.0, 1.0, 0.0, 1.0))
 
         if self.ear_enabled:
             text = f"EAR: {self.ear_value:.2f}"

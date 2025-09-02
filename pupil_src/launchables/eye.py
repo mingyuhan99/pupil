@@ -136,6 +136,7 @@ def eye(
         import psutil
         from av_writer import JPEG_Writer, MPEG_Writer, NonMonotonicTimestampError
         from background_helper import IPC_Logging_Task_Proxy
+        from eyelid_plugin import Eyelid_Plugin
         from file_methods import Persistent_Dict
         from gl_utils import (
             adjust_gl_view,
@@ -152,7 +153,6 @@ def eye(
         # Plug-ins
         from plugin import Plugin_List
         from pupil_detector_plugins import EVENT_KEY, available_detector_plugins
-        from eyelid_plugin import Eyelid_Plugin
         from pyglui import cygl, graph, ui
         from pyglui.cygl.utils import Named_Texture
         from roi import Roi
