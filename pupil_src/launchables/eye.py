@@ -152,6 +152,7 @@ def eye(
         # Plug-ins
         from plugin import Plugin_List
         from pupil_detector_plugins import EVENT_KEY, available_detector_plugins
+        from eyelid_plugin import Eyelid_Plugin
         from pyglui import cygl, graph, ui
         from pyglui.cygl.utils import Named_Texture
         from roi import Roi
@@ -236,7 +237,7 @@ def eye(
             + source_classes
             + available_detectors
             + runtime_detectors
-            + [Roi]
+            + [Roi, Eyelid_Plugin]
         )
         g_pool.plugin_by_name = {p.__name__: p for p in plugins}
 
@@ -264,6 +265,7 @@ def eye(
             ("HMD_Streaming_Manager", {}),
             ("File_Manager", {}),
             ("Roi", {}),
+            ("Eyelid_Plugin", {}),
         ]
 
         def consume_events_and_render_buffer():
