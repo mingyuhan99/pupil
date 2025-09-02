@@ -227,7 +227,7 @@ def launcher():
 
     ## IPC
     timebase = Value(c_double, 0)
-    eye_procs_alive = Value(c_bool, 0), Value(c_bool, 0)
+    eye_procs_alive = [Value(c_bool, 0) for _ in range(4)]
 
     zmq_ctx = zmq.Context()
 

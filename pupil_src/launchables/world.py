@@ -617,22 +617,15 @@ def world(
                 setter=detection_enabled_setter,
             )
         )
-        general_settings.append(
-            ui.Switch(
-                "eye0_process",
-                label="Detect eye 0",
-                setter=lambda alive: start_stop_eye(0, alive),
-                getter=lambda: eye_procs_alive[0].value,
+        for i in range(len(eye_procs_alive)):
+            general_settings.append(
+                ui.Switch(
+                    f"eye{i}_process",
+                    label=f"Detect eye {i}",
+                    setter=lambda alive, i=i: start_stop_eye(i, alive),
+                    getter=lambda i=i: eye_procs_alive[i].value,
+                )
             )
-        )
-        general_settings.append(
-            ui.Switch(
-                "eye1_process",
-                label="Detect eye 1",
-                setter=lambda alive: start_stop_eye(1, alive),
-                getter=lambda: eye_procs_alive[1].value,
-            )
-        )
 
         general_settings.append(ui.Info_Text(f"Capture Version: {g_pool.version}"))
         general_settings.append(
@@ -709,10 +702,9 @@ def world(
         )
         g_pool.trigger_main_window_redraw()
 
-        if session_settings.get("eye1_process_alive", True):
-            launch_eye_process(1, delay=0.6)
-        if session_settings.get("eye0_process_alive", True):
-            launch_eye_process(0, delay=0.3)
+        for i in range(len(eye_procs_alive) - 1, -1, -1):
+            if session_settings.get(f"eye{i}_process_alive", True):
+                launch_eye_process(i, delay=0.3 * (len(eye_procs_alive) - i))
 
         ipc_pub.notify({"subject": "world_process.started"})
         logger.debug("Process started.")
@@ -820,8 +812,8 @@ def world(
         session_settings["loaded_plugins"] = g_pool.plugins.get_initializers()
         session_settings["ui_config"] = g_pool.gui.configuration
         session_settings["version"] = str(g_pool.version)
-        session_settings["eye0_process_alive"] = eye_procs_alive[0].value
-        session_settings["eye1_process_alive"] = eye_procs_alive[1].value
+        for i in range(len(eye_procs_alive)):
+            session_settings[f"eye{i}_process_alive"] = eye_procs_alive[i].value
         session_settings[
             "min_calibration_confidence"
         ] = g_pool.min_calibration_confidence
@@ -860,8 +852,8 @@ def world(
         glfw.terminate()
 
         # shut down eye processes:
-        stop_eye_process(0)
-        stop_eye_process(1)
+        for i in range(len(eye_procs_alive)):
+            stop_eye_process(i)
 
         logger.debug("Process shutting down.")
         ipc_pub.notify({"subject": "world_process.stopped"})
