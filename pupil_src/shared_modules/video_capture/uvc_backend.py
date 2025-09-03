@@ -71,21 +71,32 @@ def copy_frame_to_namespace(frame):
             
     return new_frame
 
-# uvc_backend.py 파일 상단, 다른 함수나 클래스 정의 근처
+# uvc_backend.py 파일 상단에 있는 함수
 def transform_frame_for_cpu(image, horizontal_flip, degrees):
     """(모든 CPU 분석을 위해) 이미지를 좌우 반전 및 회전시키는 함수"""
     if not horizontal_flip and degrees == 0:
-        return image # 변환이 필요 없으면 원본 반환
+        return image  # 변환이 필요 없으면 원본 반환
 
     processed_image = image.copy()
+
+    # 1. 좌우 반전을 먼저 적용합니다.
     if horizontal_flip:
         processed_image = cv2.flip(processed_image, 1)
+
+    # 2. 그 다음에 회전을 적용합니다.
     if degrees == 90:
         processed_image = cv2.rotate(processed_image, cv2.ROTATE_90_CLOCKWISE)
     elif degrees == 180:
         processed_image = cv2.rotate(processed_image, cv2.ROTATE_180)
     elif degrees == 270:
         processed_image = cv2.rotate(processed_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    
+    # 3. <<< 핵심 수정 부분: 특별 케이스 보정 >>>
+    # 270도 회전과 수평 반전이 함께일 때 발생하는 좌표계 불일치 보정
+    if horizontal_flip and degrees == 270:
+        # 기존 상하 반전(0)에서 상하+좌우 동시 반전(-1)으로 변경
+        processed_image = cv2.flip(processed_image, -1) # 상하 및 좌우 동시 반전 추가
+    
     return processed_image
 
 class TJSAMP(enum.IntEnum):
