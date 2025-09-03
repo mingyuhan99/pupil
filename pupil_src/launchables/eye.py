@@ -13,8 +13,35 @@ import platform
 import signal
 import time
 from types import SimpleNamespace
+import torch
+import torch.nn as nn
+import numpy as np
+class AdaptiveEyeNet6Layers(nn.Module):
+    def __init__(self, num_landmarks=8):
+        super().__init__()
+        layers_config = [(64, 7, 2), (128, 5, 2), (192, 3, 2), (256, 3, 2), (320, 3, 2), (384, 3, 2)]
+        self.layers = nn.ModuleList()
+        in_channels = 1
+        for out_channels, kernel_size, stride in layers_config:
+            self.layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=kernel_size//2))
+            self.layers.append(nn.InstanceNorm2d(out_channels))
+            self.layers.append(nn.LeakyReLU(0.1))
+            in_channels = out_channels
+        with torch.no_grad():
+            x = torch.zeros(1, 1, 192, 192)
+            for layer in self.layers:
+                x = layer(x)
+            self.conv_out_size = x.view(1, -1).size(1)
+        self.fc1 = nn.Linear(self.conv_out_size, 1024)
+        self.fc2 = nn.Linear(1024, num_landmarks * 2)
 
-
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        x = x.view(x.size(0), -1)
+        x = nn.functional.leaky_relu(self.fc1(x), negative_slope=0.1)
+        x = self.fc2(x)
+        return x
 class Is_Alive_Manager:
     """
     A context manager to wrap the is_alive flag.
@@ -50,7 +77,53 @@ class Is_Alive_Manager:
         time.sleep(1.0)
         return True  # do not propagate exception
 
+# 3. 비디오 변환 함수들
+def transform_frame_by_direction(frame, direction):
+    """방향에 따라 프레임 변환"""
+    if direction == "left-down":
+        return cv2.flip(cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE), 1)
+    elif direction == "left-side":
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif direction == "right-down":
+        return cv2.flip(cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE), 0)
+    elif direction == "right-side":
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    else:
+        return frame
 
+def predict_landmarks(model, frame, device):
+    """프레임에서 landmark 예측"""
+    if frame.shape[:2] != (192, 192):
+        return None
+    
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+    tensor = torch.from_numpy(gray_frame.astype(np.float32) / 255.0).unsqueeze(0).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        landmarks_pred = model(tensor)
+    
+    landmarks = landmarks_pred.cpu().numpy().reshape(8, 2)
+    return landmarks
+def predict_landmarks(model, frame, device):
+    """프레임에서 landmark 예측"""
+    if hasattr(frame, 'img'):
+        img = frame.img
+    elif hasattr(frame, 'gray'):
+        img = frame.gray
+    else:
+        return None
+        
+    if img.shape[:2] != (192, 192):
+        return None
+    
+    gray_frame = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+    tensor = torch.from_numpy(gray_frame.astype(np.float32) / 255.0).unsqueeze(0).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        landmarks_pred = model(tensor)
+    
+    landmarks = landmarks_pred.cpu().numpy().reshape(8, 2)
+    return landmarks
 def eye(
     timebase,
     is_alive_flag,
@@ -263,8 +336,10 @@ def eye(
             ("NDSI_Manager", {}),
             ("HMD_Streaming_Manager", {}),
             ("File_Manager", {}),
-            ("Roi", {}),
+            ("Roi", {})
         ]
+
+
 
         def consume_events_and_render_buffer():
             glfw.make_context_current(main_window)
@@ -272,8 +347,25 @@ def eye(
 
             if all(c > 0 for c in g_pool.camera_render_size):
                 glViewport(0, 0, *g_pool.camera_render_size)
+                
+                # 기존 플러그인 display
                 for p in g_pool.plugins:
                     p.gl_display()
+                
+                # Custom landmark overlay
+                if g_pool.eyelid_on and g_pool.landmarks is not None and is_resolution_192():
+                    # OpenGL로 landmark 점들 그리기
+                    from OpenGL.GL import glColor3f, glPointSize, glBegin, glEnd, glVertex2f, GL_POINTS
+                    
+                    glColor3f(0.0, 1.0, 0.0)  # 녹색
+                    glPointSize(5.0)
+                    glBegin(GL_POINTS)
+                    for x, y in g_pool.landmarks:
+                        # 정규화된 좌표로 변환 (0-1 범위)
+                        norm_x = x / 192.0
+                        norm_y = y / 192.0
+                        glVertex2f(norm_x, norm_y)
+                    glEnd()
 
             glViewport(0, 0, *window_size)
             # render graphs
@@ -542,53 +634,99 @@ def eye(
             # with incorrect settings that were loaded from session settings.
             plugins_to_load.append(overwrite_cap_settings)
 
-        # Add runtime plugins to the list of plugins to load with default arguments,
-        # if not already restored from session settings
-        plugins_to_load_names = {name for name, _ in plugins_to_load}
-        for runtime_detector in runtime_detectors:
-            runtime_name = runtime_detector.__name__
-            if runtime_name not in plugins_to_load_names:
-                plugins_to_load.append((runtime_name, {}))
+        g_pool.video_direction = session_settings.get("video_direction", "none")
+        g_pool.model_path = session_settings.get("model_path", "/Users/witlab/Documents/2025-projects/EyeWithShut-Study4/after_finetuning_belowcameraview_best.pth")
+        g_pool.eyelid_on = session_settings.get("eyelid_on", False)
+        g_pool.landmark_model = None
+        g_pool.landmarks = None
+        g_pool.device = torch.device('cpu')  # 또는 'mps' for M2/M3
 
-        g_pool.plugins = Plugin_List(g_pool, plugins_to_load)
+        def load_landmark_model():
+            """Landmark 모델 로드"""
+            try:
+                if g_pool.landmark_model is None:
+                    g_pool.landmark_model = AdaptiveEyeNet6Layers().to(g_pool.device)
+                g_pool.landmark_model.load_state_dict(torch.load(g_pool.model_path, map_location=g_pool.device))
+                g_pool.landmark_model.eval()
+                logger.info(f"Landmark model loaded: {g_pool.model_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to load landmark model: {e}")
+                return False
 
-        # START: Custom Menu
-        # Add state for the new menu items
-        g_pool.pupil_intensity_range_text = session_settings.get(
-            "pupil_intensity_range_text", "30"
-        )
-        g_pool.custom_button_state = session_settings.get("custom_button_state", False)
+        def set_video_direction(direction):
+            """비디오 방향 설정"""
+            g_pool.video_direction = direction
+            logger.info(f"Video direction set to: {direction}")
 
-        # Create the menu
+        def toggle_eyelid(val):
+            """Eyelid 토글"""
+            g_pool.eyelid_on = val
+            if val and not g_pool.landmark_model:
+                if not load_landmark_model():
+                    g_pool.eyelid_on = False
+            logger.info(f"Eyelid visualization: {'ON' if val else 'OFF'}")
+
+        def show_ear():
+            """EAR 보기 (현재는 빈 함수)"""
+            logger.info("EAR button clicked")
+
+        # Check if resolution is 192x192
+        def is_resolution_192():
+            """현재 해상도가 192x192인지 확인"""
+            if hasattr(g_pool, 'capture') and g_pool.capture:
+                w, h = g_pool.capture.frame_size
+                return w == 192 and h == 192
+            return False
+
+        # Create custom menu
         custom_menu = ui.Growing_Menu("Custom", header_pos="headline")
 
-        # Add a text input like control.
-        # Based on user request for "pupil intensity range in Pupil Detector 2D"
-        # which is a slider, but user asked for text input.
-        # This will fail if ui.Text_Input does not exist.
-        try:
-            custom_menu.append(
-                ui.Text_Input(
-                    "pupil_intensity_range_text",
-                    g_pool,
-                    label="Pupil Intensity Range",
-                )
+        # Video Direction Dropdown
+        custom_menu.append(
+            ui.Selector(
+                "video_direction",
+                g_pool,
+                setter=set_video_direction,
+                selection=["none", "left-down", "left-side", "right-down", "right-side"],
+                labels=["None", "Left-Down", "Left-Side", "Right-Down", "Right-Side"],
+                label="Video Direction"
             )
-        except AttributeError:
-            logger.warning("ui.Text_Input not available. Falling back to a slider.")
-            custom_menu.append(
-                ui.Slider(
-                    "pupil_intensity_range_text",
-                    g_pool,
-                    label="Pupil Intensity Range",
-                    min=0,
-                    max=60,
-                    step=1,
-                )
-            )
+        )
 
-        # Add a button like "flip image display"
-        custom_menu.append(ui.Switch("custom_button_state", g_pool, label="Custom Button"))
+        # Model Input Text Field
+        custom_menu.append(
+            ui.Text_Input(
+                "model_path",
+                g_pool,
+                label="Model Path"
+            )
+        )
+
+        # Eyelid On Toggle
+        custom_menu.append(
+            ui.Switch(
+                "eyelid_on",
+                g_pool,
+                setter=toggle_eyelid,
+                label="Eyelid On"
+            )
+        )
+
+        # EAR Show Button
+        custom_menu.append(
+            ui.Button("EAR Show", show_ear)
+        )
+
+        # Resolution warning
+        def update_resolution_info():
+            if is_resolution_192():
+                return "✓ 192x192 resolution - Landmark detection available"
+            else:
+                return "⚠ Landmark detection requires 192x192 resolution"
+
+        g_pool.resolution_info = ui.Info_Text(update_resolution_info())
+        custom_menu.append(g_pool.resolution_info)
 
         def toggle_custom_menu(collapsed):
             g_pool.menubar.collapsed = collapsed
@@ -598,19 +736,27 @@ def eye(
 
         g_pool.menubar.append(custom_menu)
 
-        # Create an icon for the menu
+        # Custom menu icon
         icon = ui.Icon(
             "collapsed",
             custom_menu,
-            label=" ",  # Blank icon as requested
+            label=" ",  # 빈 아이콘
             on_val=False,
             off_val=True,
             setter=toggle_custom_menu,
-            label_font="pupil_icons",
+            label_font="pupil_icons"
         )
-        icon.tooltip = "Custom Menu"
+        icon.tooltip = "Custom Settings"
         g_pool.iconbar.append(icon)
-        # END: Custom Menu
+        # Add runtime plugins to the list of plugins to load with default arguments,
+        # if not already restored from session settings
+        plugins_to_load_names = {name for name, _ in plugins_to_load}
+        for runtime_detector in runtime_detectors:
+            runtime_name = runtime_detector.__name__
+            if runtime_name not in plugins_to_load_names:
+                plugins_to_load.append((runtime_name, {}))
+
+        g_pool.plugins = Plugin_List(g_pool, plugins_to_load)
 
         if not g_pool.capture:
             # Make sure we always have a capture running. Important if there was no
@@ -772,7 +918,14 @@ def eye(
                 plugin.recent_events(event)
 
             frame = event.get("frame")
-            if frame:
+            if frame and g_pool.eyelid_on and is_resolution_192() and g_pool.landmark_model:
+                # 비디오 방향 변환
+                processed_frame = transform_frame_by_direction(frame.img, g_pool.video_direction)
+                
+                # Landmark 예측 (5프레임마다 1번만 실행하여 성능 최적화)
+                if frame.index % 5 == 0:
+                    g_pool.landmarks = predict_landmarks(g_pool.landmark_model, processed_frame, g_pool.device)
+
                 if should_publish_frames:
                     try:
                         if frame_publish_format == "jpeg":
@@ -852,8 +1005,9 @@ def eye(
         session_settings["display_mode"] = g_pool.display_mode
         session_settings["ui_config"] = g_pool.gui.configuration
         session_settings["version"] = str(g_pool.version)
-        session_settings["pupil_intensity_range_text"] = g_pool.pupil_intensity_range_text
-        session_settings["custom_button_state"] = g_pool.custom_button_state
+        session_settings["video_direction"] = g_pool.video_direction
+        session_settings["model_path"] = g_pool.model_path
+        session_settings["eyelid_on"] = g_pool.eyelid_on
 
         if not hide_ui:
             glfw.restore_window(main_window)  # need to do this for windows os
