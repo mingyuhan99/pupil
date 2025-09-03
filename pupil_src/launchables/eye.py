@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 import numpy as np
+import cv2
 class AdaptiveEyeNet6Layers(nn.Module):
     def __init__(self, num_landmarks=8):
         super().__init__()
@@ -104,26 +105,7 @@ def predict_landmarks(model, frame, device):
     
     landmarks = landmarks_pred.cpu().numpy().reshape(8, 2)
     return landmarks
-def predict_landmarks(model, frame, device):
-    """프레임에서 landmark 예측"""
-    if hasattr(frame, 'img'):
-        img = frame.img
-    elif hasattr(frame, 'gray'):
-        img = frame.gray
-    else:
-        return None
-        
-    if img.shape[:2] != (192, 192):
-        return None
-    
-    gray_frame = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-    tensor = torch.from_numpy(gray_frame.astype(np.float32) / 255.0).unsqueeze(0).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        landmarks_pred = model(tensor)
-    
-    landmarks = landmarks_pred.cpu().numpy().reshape(8, 2)
-    return landmarks
+
 def eye(
     timebase,
     is_alive_flag,
@@ -342,6 +324,9 @@ def eye(
 
 
         def consume_events_and_render_buffer():
+            from OpenGL.GL import (
+            glColor3f, glPointSize, glBegin, glEnd, glVertex2f, GL_POINTS
+            )       
             glfw.make_context_current(main_window)
             clear_gl_screen()
 
@@ -354,18 +339,21 @@ def eye(
                 
                 # Custom landmark overlay
                 if g_pool.eyelid_on and g_pool.landmarks is not None and is_resolution_192():
-                    # OpenGL로 landmark 점들 그리기
-                    from OpenGL.GL import glColor3f, glPointSize, glBegin, glEnd, glVertex2f, GL_POINTS
+                    # 픽셀 기반 좌표계로 변경
+                    # frame_size가 (너비, 높이)이므로 (높이, 너비, 1) 형태로 바꿔서 전달
+                    h, w = g_pool.capture.frame_size
+                    make_coord_system_pixel_based((w, h, 1)) # 수정된 부분
                     
-                    glColor3f(0.0, 1.0, 0.0)  # 녹색
+                    glColor3f(1.0, 0.0, 0.0)  # 눈에 잘 띄게 빨간색으로 변경
                     glPointSize(5.0)
                     glBegin(GL_POINTS)
                     for x, y in g_pool.landmarks:
-                        # 정규화된 좌표로 변환 (0-1 범위)
-                        norm_x = x / 192.0
-                        norm_y = y / 192.0
-                        glVertex2f(norm_x, norm_y)
+                        # 픽셀 좌표 그대로 사용
+                        glVertex2f(x, y)
                     glEnd()
+                    
+                    # 원래 좌표계로 복구
+                    make_coord_system_norm_based()
 
             glViewport(0, 0, *window_size)
             # render graphs
@@ -922,9 +910,11 @@ def eye(
                 # 비디오 방향 변환
                 processed_frame = transform_frame_by_direction(frame.img, g_pool.video_direction)
                 
-                # Landmark 예측 (5프레임마다 1번만 실행하여 성능 최적화)
-                if frame.index % 5 == 0:
+                # Landmark 예측 (1프레임마다 1번만 실행하여 성능 최적화)
+                if frame.index % 1 == 0:
                     g_pool.landmarks = predict_landmarks(g_pool.landmark_model, processed_frame, g_pool.device)
+                    # if g_pool.landmarks is not None:
+                        # print(f"Frame {frame.index}: Predicted landmarks:\n{g_pool.landmarks}")
 
                 if should_publish_frames:
                     try:
