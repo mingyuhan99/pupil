@@ -168,6 +168,7 @@ def world(
         from camera_intrinsics_estimation import Camera_Intrinsics_Estimation
         from display_recent_gaze import Display_Recent_Gaze
         from fixation_detector import Fixation_Detector
+        from gesture_estimator import Gesture_Estimator
         from gaze_mapping import registered_gazer_classes
         from gaze_mapping.gazer_base import GazerBase
         from head_pose_tracker.online_head_pose_tracker import Online_Head_Pose_Tracker
@@ -249,6 +250,7 @@ def world(
             p for p in runtime_plugins if not issubclass(p, PupilDetectorPlugin)
         ]
         user_plugins = [
+            Gesture_Estimator,
             Pupil_Groups,
             NetworkApiPlugin,
             Time_Sync,
@@ -319,6 +321,7 @@ def world(
         default_plugins = [
             (default_capture_name, default_capture_settings),
             ("Pupil_Data_Relay", {}),
+            ("Gesture_Estimator", {}),
             ("UVC_Manager", {}),
             ("NDSI_Manager", {}),
             ("HMD_Streaming_Manager", {}),
