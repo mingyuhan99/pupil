@@ -14,6 +14,7 @@ import signal
 import time
 from types import SimpleNamespace
 import torch
+torch.backends.nnpack.enabled = False
 import torch.nn as nn
 import numpy as np
 import cv2
@@ -689,7 +690,13 @@ def eye(
         g_pool.eyelid_on = session_settings.get("eyelid_on", False)
         g_pool.landmark_model = None
         g_pool.landmarks = None
-        g_pool.device = torch.device('cpu')  # 또는 'mps' for M2/M3
+        # Apple Silicon (M1/M2/M3) GPU (MPS) 사용 가능 여부 확인
+        if torch.backends.mps.is_available():
+            g_pool.device = torch.device("mps")
+            logger.info("Apple Silicon GPU (MPS) is available, using GPU for model.")
+        else:
+            g_pool.device = torch.device("cpu")
+            logger.info("MPS not available, using CPU for model.")  # 또는 'mps' for M2/M3
 
         def load_landmark_model():
             """Landmark 모델 로드"""
