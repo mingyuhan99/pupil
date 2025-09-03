@@ -17,10 +17,20 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+import cv2
+from types import SimpleNamespace
+
 
 import gl_utils
 import numpy as np
 import uvc
+from OpenGL.GL import (
+    glPushMatrix,
+    glPopMatrix,
+    glRotatef,
+    glTranslatef,
+    glScalef
+)
 from camera_models import Camera_Model
 from pyglui import cygl, ui
 from version_utils import parse_version
@@ -36,6 +46,47 @@ assert parse_version(uvc.__version__) >= parse_version("0.13")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+
+# Add this function to uvc_backend.py
+def copy_frame_to_namespace(frame):
+    """
+    Manually copies attributes from a uvc_bindings.Frame object
+    to a writable SimpleNamespace object.
+    """
+    if frame is None:
+        return None
+    
+    new_frame = SimpleNamespace()
+    
+    # Get a list of all attributes of the original frame object
+    # Exclude callable methods and special dunder methods
+    attributes_to_copy = [
+        attr for attr in dir(frame) 
+        if not callable(getattr(frame, attr)) and not attr.startswith('__')
+    ]
+    
+    # Copy the attributes one by one to the new object
+    for attr_name in attributes_to_copy:
+        setattr(new_frame, attr_name, getattr(frame, attr_name))
+            
+    return new_frame
+
+# uvc_backend.py 파일 상단, 다른 함수나 클래스 정의 근처
+def transform_frame_for_cpu(image, horizontal_flip, degrees):
+    """(모든 CPU 분석을 위해) 이미지를 좌우 반전 및 회전시키는 함수"""
+    if not horizontal_flip and degrees == 0:
+        return image # 변환이 필요 없으면 원본 반환
+
+    processed_image = image.copy()
+    if horizontal_flip:
+        processed_image = cv2.flip(processed_image, 1)
+    if degrees == 90:
+        processed_image = cv2.rotate(processed_image, cv2.ROTATE_90_CLOCKWISE)
+    elif degrees == 180:
+        processed_image = cv2.rotate(processed_image, cv2.ROTATE_180)
+    elif degrees == 270:
+        processed_image = cv2.rotate(processed_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return processed_image
 
 class TJSAMP(enum.IntEnum):
     """Reimplements turbojpeg.h TJSAMP"""
@@ -477,14 +528,15 @@ class UVC_Source(Base_Source):
         else:
             self._restart_in -= 1
 
+    # uvc_backend.py의 UVC_Source 클래스 내부
     def recent_events(self, events):
         was_online = self.online
 
         try:
-            frame = self.uvc_capture.get_frame(0.05)
+            # 1. uvc로부터 받은 원본 프레임을 'raw_frame'으로 명명합니다.
+            raw_frame = self.uvc_capture.get_frame(0.05)
 
-            if np.isclose(frame.timestamp, 0):
-                # sometimes (probably only on windows) after disconnections, the first frame has 0 ts
+            if np.isclose(raw_frame.timestamp, 0):
                 logger.debug(
                     "Received frame with invalid timestamp."
                     " This can happen after a disconnect."
@@ -493,12 +545,11 @@ class UVC_Source(Base_Source):
                 return
 
             if self.preferred_exposure_time:
-                target = self.preferred_exposure_time.calculate_based_on_frame(frame)
+                target = self.preferred_exposure_time.calculate_based_on_frame(raw_frame)
                 if target is not None:
                     self.exposure_time = target
 
-            if self.stripe_detector and self.stripe_detector.require_restart(frame):
-                # set the self.frame_rate in order to restart
+            if self.stripe_detector and self.stripe_detector.require_restart(raw_frame):
                 self.frame_rate = self.frame_rate
                 logger.debug("Stripes detected")
 
@@ -511,19 +562,37 @@ class UVC_Source(Base_Source):
             self._restart_logic()
         else:
             if self.ts_offset is not None:
-                # c930 timestamps need to be set here. The camera does not provide valid pts from device
-                frame.timestamp = uvc.get_time_monotonic() + self.ts_offset
+                raw_frame.timestamp = uvc.get_time_monotonic() + self.ts_offset
 
-            if self._last_ts is not None and frame.timestamp <= self._last_ts:
+            if self._last_ts is not None and raw_frame.timestamp <= self._last_ts:
                 logger.debug(
                     "Received non-monotonic timestamps from UVC! Dropping frame."
-                    f" Last: {self._last_ts}, current: {frame.timestamp}"
+                    f" Last: {self._last_ts}, current: {raw_frame.timestamp}"
                 )
             else:
-                self._last_ts = frame.timestamp
-                frame.timestamp -= self.g_pool.timebase.value
+                self._last_ts = raw_frame.timestamp
+                raw_frame.timestamp -= self.g_pool.timebase.value
+                
+            # 2. Use the new function to safely create a copy
+                frame = copy_frame_to_namespace(raw_frame)
+
+                # 3. Transform the BGR image of the copy
+                frame.bgr = transform_frame_for_cpu(
+                    frame.bgr, # Use frame.bgr since raw_frame.bgr might not exist on all frame types
+                    getattr(self.g_pool, "horizontal_flip", False),
+                    getattr(self.g_pool, "image_rotation", 0),
+                )
+                
+                # 4. 변환된 BGR 이미지로부터 gray 이미지를 새로 생성합니다.
+                frame.gray = cv2.cvtColor(frame.bgr, cv2.COLOR_BGR2GRAY)
+                # 원본 프레임의 다른 이미지 속성(img)이 있다면 BGR과 동일하게 처리합니다.
+                if hasattr(frame, 'img'):
+                    frame.img = frame.bgr
+                
+                # 5. 최종적으로 변환된 프레임을 시스템에 전달합니다.
                 self._recent_frame = frame
                 events["frame"] = frame
+                
             self._restart_in = 3
 
         if was_online != self.online:
@@ -907,16 +976,19 @@ class UVC_Source(Base_Source):
             self.uvc_capture = None
         super().cleanup()
 
+    # uvc_backend.py의 gl_display 함수
+
     def gl_display(self):
-        # Temporary copy of Base_Source.gl_display until proper frame class hierarchy
-        # is implemented
+        # 1. g_pool에서 설정값을 함수 시작과 함께 먼저 가져옵니다.
+        should_horizontal_flip = getattr(self.g_pool, "horizontal_flip", False)
+        rotation_degrees = getattr(self.g_pool, "image_rotation", 0)
+
+        # 텍스처 업데이트 로직 (이 부분은 기존 코드와 동일)
         if self._recent_frame is not None:
             frame = self._recent_frame
             if (
-                # `frame.yuv_subsampling` is `None` without calling `frame.yuv_buffer`
                 frame.yuv_buffer is not None
                 and TJSAMP(frame.yuv_subsampling) == TJSAMP.TJSAMP_422
-                # TODO: Find a better solution than this:
                 and getattr(self.g_pool, "display_mode", "") != "algorithm"
             ):
                 self.g_pool.image_tex.update_from_yuv_buffer(
@@ -925,13 +997,35 @@ class UVC_Source(Base_Source):
             else:
                 self.g_pool.image_tex.update_from_ndarray(frame.bgr)
             gl_utils.glFlush()
-        should_flip = getattr(self.g_pool, "flip", False)
-        gl_utils.make_coord_system_norm_based(flip=should_flip)
+
+        # 2. 기본 0-1 좌표계 설정
+        gl_utils.make_coord_system_norm_based(flip=False)
+
+        # 3. 그래픽 상태 저장
+        glPushMatrix()
+
+        # 4. 좌우 반전 적용 (필요한 경우)
+        if should_horizontal_flip:
+            glTranslatef(1.0, 0.0, 0.0)
+            glScalef(-1.0, 1.0, 1.0)
+
+        # 5. 회전 적용 (필요한 경우)
+        if rotation_degrees != 0:
+            glTranslatef(0.5, 0.5, 0.0)
+            glRotatef(-rotation_degrees, 0.0, 0.0, 1.0)
+            glTranslatef(-0.5, -0.5, 0.0)
+
+        # 6. 이미지 그리기
         self.g_pool.image_tex.draw()
+
+        # 7. 그래픽 상태 복원
+        glPopMatrix()
+
         if not self.online:
             cygl.utils.draw_gl_texture(np.zeros((1, 1, 3), dtype=np.uint8), alpha=0.4)
+        
         gl_utils.make_coord_system_pixel_based(
-            (self.frame_size[1], self.frame_size[0], 3), flip=should_flip
+            (self.frame_size[1], self.frame_size[0], 3), flip=should_horizontal_flip
         )
 
 

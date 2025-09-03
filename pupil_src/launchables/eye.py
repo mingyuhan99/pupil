@@ -78,6 +78,54 @@ class Is_Alive_Manager:
         time.sleep(1.0)
         return True  # do not propagate exception
 
+
+def copy_frame_to_namespace(frame):
+    """
+    uvc_bindings.Frame처럼 __dict__가 없는 객체의 속성을
+    수정 가능한 SimpleNamespace 객체로 수동 복사합니다.
+    """
+    if frame is None:
+        return None
+    
+    new_frame = SimpleNamespace()
+    
+    # frame 객체가 가진 모든 속성 이름 목록을 가져옵니다.
+    # 호출 가능한 메서드나 특수 속성(__로 시작하는)은 제외합니다.
+    attributes_to_copy = [
+        attr for attr in dir(frame) 
+        if not callable(getattr(frame, attr)) and not attr.startswith('__')
+    ]
+    
+    # 속성들을 하나씩 새 객체에 복사합니다.
+    for attr_name in attributes_to_copy:
+        setattr(new_frame, attr_name, getattr(frame, attr_name))
+            
+    return new_frame
+
+# eye.py의 eye 함수 내부, 다른 함수 정의(def) 근처에 추가
+def copy_frame_to_namespace(frame):
+    """
+    uvc_bindings.Frame처럼 __dict__가 없는 객체의 속성을
+    수정 가능한 SimpleNamespace 객체로 수동 복사합니다.
+    """
+    if frame is None:
+        return None
+    
+    new_frame = SimpleNamespace()
+    
+    # frame 객체가 가진 모든 속성 이름 목록을 가져옵니다.
+    # 호출 가능한 메서드나 특수 속성(__로 시작하는)은 제외합니다.
+    attributes_to_copy = [
+        attr for attr in dir(frame) 
+        if not callable(getattr(frame, attr)) and not attr.startswith('__')
+    ]
+    
+    # 속성들을 하나씩 새 객체에 복사합니다.
+    for attr_name in attributes_to_copy:
+        setattr(new_frame, attr_name, getattr(frame, attr_name))
+            
+    return new_frame
+
 # 3. 비디오 변환 함수들
 def transform_frame_by_direction(frame, direction):
     """방향에 따라 프레임 변환"""
@@ -378,7 +426,7 @@ def eye(
                     main_window, x, y, cached_scale=None
                 )
                 pos = normalize(pos, g_pool.camera_render_size)
-                if g_pool.flip:
+                if g_pool.horizontal_flip:
                     pos = 1 - pos[0], 1 - pos[1]
                 # Position in img pixels
                 pos = denormalize(pos, g_pool.capture.frame_size)
@@ -466,7 +514,7 @@ def eye(
 
             pos = x, y
             pos = normalize(pos, g_pool.camera_render_size)
-            if g_pool.flip:
+            if g_pool.horizontal_flip: 
                 pos = 1 - pos[0], 1 - pos[1]
             # Position in img pixels
             pos = denormalize(pos, g_pool.capture.frame_size)
@@ -495,7 +543,10 @@ def eye(
         camera_is_physically_flipped = eye_id == 0
         g_pool.iconified = False
         g_pool.capture = None
-        g_pool.flip = session_settings.get("flip", camera_is_physically_flipped)
+        # g_pool.flip = session_settings.get("flip", camera_is_physically_flipped)
+        g_pool.horizontal_flip = session_settings.get("horizontal_flip", False) # 이 줄을 추가/수정합니다.
+        g_pool.image_rotation = session_settings.get("image_rotation", 0) # 회전 각도 (0, 90, 180, 270)
+        g_pool.display_mode = session_settings.get("display_mode", "camera_image")
         g_pool.display_mode = session_settings.get("display_mode", "camera_image")
         g_pool.display_mode_info_text = {
             "camera_image": "Raw eye camera image. This uses the least amount of CPU power",
@@ -586,7 +637,18 @@ def eye(
             glfw.set_window_size(main_window, int(f_width), int(f_height))
 
         general_settings.append(ui.Button("Reset window size", set_window_size))
-        general_settings.append(ui.Switch("flip", g_pool, label="Flip image display"))
+        # general_settings.append(ui.Switch("flip", g_pool, label="Flip image display"))
+        general_settings.append(ui.Switch("horizontal_flip", g_pool, label="Horizontal Flip")) # 이 줄을 추가/수정합니다.
+        general_settings.append(
+            ui.Selector(
+                "image_rotation",
+                g_pool,
+                selection=[0, 90, 180, 270],
+                labels=["0° (Off)", "90°", "180°", "270°"],
+                label="Rotate Display"
+            )
+        )
+        # ▼▼▼ 여기까지 추가 ▼▼▼
         general_settings.append(
             ui.Selector(
                 "display_mode",
@@ -623,7 +685,7 @@ def eye(
             plugins_to_load.append(overwrite_cap_settings)
 
         g_pool.video_direction = session_settings.get("video_direction", "none")
-        g_pool.model_path = session_settings.get("model_path", "/Users/witlab/Documents/2025-projects/EyeWithShut-Study4/after_finetuning_belowcameraview_best.pth")
+        g_pool.model_path = session_settings.get("model_path", "/Users/witlab/Documents/2025-projects/EyeWithShut-Study4/after_finetuning_sidecameraview_best.pth")
         g_pool.eyelid_on = session_settings.get("eyelid_on", False)
         g_pool.landmark_model = None
         g_pool.landmarks = None
@@ -906,6 +968,7 @@ def eye(
                 plugin.recent_events(event)
 
             frame = event.get("frame")
+           
             if frame and g_pool.eyelid_on and is_resolution_192() and g_pool.landmark_model:
                 # 비디오 방향 변환
                 processed_frame = transform_frame_by_direction(frame.img, g_pool.video_direction)
@@ -991,13 +1054,15 @@ def eye(
 
         session_settings["loaded_plugins"] = g_pool.plugins.get_initializers()
         # save session persistent settings
-        session_settings["flip"] = g_pool.flip
+        # session_settings["flip"] = g_pool.flip
+        session_settings["horizontal_flip"] = g_pool.horizontal_flip 
         session_settings["display_mode"] = g_pool.display_mode
+        session_settings["image_rotation"] = g_pool.image_rotation
         session_settings["ui_config"] = g_pool.gui.configuration
         session_settings["version"] = str(g_pool.version)
         session_settings["video_direction"] = g_pool.video_direction
         session_settings["model_path"] = g_pool.model_path
-        session_settings["eyelid_on"] = g_pool.eyelid_on
+        # session_settings["eyelid_on"] = g_pool.eyelid_on
 
         if not hide_ui:
             glfw.restore_window(main_window)  # need to do this for windows os
